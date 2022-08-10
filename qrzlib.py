@@ -1,7 +1,7 @@
 #!/usr/bin/env python3.9
 #
 
-import _gdbm as gdbm
+import dbm.gnu as gdbm
 import json
 import logging
 import marshal
