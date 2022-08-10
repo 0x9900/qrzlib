@@ -1,4 +1,5 @@
-#!/usr/bin/env python3.9
+#!/usr/bin/env python3
+# Fred C (W6BSD) 2022
 #
 
 import dbm.gnu as gdbm
@@ -14,6 +15,8 @@ import urllib.request
 from functools import wraps
 from getpass import getpass
 from xml.dom import minidom
+
+__version__ = '0.1.1'
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
