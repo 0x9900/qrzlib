@@ -22,7 +22,7 @@ def readme():
 setup(
   name='qrzlib',
   version=__version__,
-  description='Random Length Antenna Calculator',
+  description='python Interface to QRZ.com',
   long_description=readme(),
   long_description_content_type='text/markdown',
   url='https://github.com/0x9900/qrzlib/',
