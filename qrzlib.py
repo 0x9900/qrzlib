@@ -16,7 +16,7 @@ from functools import wraps
 from getpass import getpass
 from xml.dom import minidom
 
-__version__ = '0.1.2'
+__version__ = '0.1.3'
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
@@ -59,6 +59,7 @@ class GDBMCache:
 
     """
     self.log = logging.getLogger('GDBMCache')
+    self.log.setLevel(os.getenv('LOG_LEVEL', 'INFO').upper())
     self._dbm_file = dbm_file
     self._kexpire = f"_{self.__class__.__name__}_expire_"
     if isinstance(expire, int):
@@ -91,6 +92,7 @@ class GDBMCache:
           record = marshal.loads(fdb[key])
         if self._expire == 0 or record[self._kexpire] > time.time() - self._expire:
           del record[self._kexpire]
+          self.log.debug('%s found in cache', key)
           return record
         self.log.debug('Cache expired')
         raise KeyError
@@ -130,6 +132,7 @@ class QRZ:
 
   def __init__(self):
     self.log = logging.getLogger('QRZ')
+    self.log.setLevel(os.getenv('LOG_LEVEL', 'INFO').upper())
     self.key = None
     self.error = None
     self._data = {}
@@ -200,6 +203,10 @@ class QRZ:
   @property
   def zip(self):
     return self._data['zip']
+
+  @property
+  def country(self):
+    return self._data['country']
 
   @property
   def grid(self):
