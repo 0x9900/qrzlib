@@ -16,7 +16,7 @@ from functools import wraps
 from getpass import getpass
 from xml.dom import minidom
 
-__version__ = '0.1.3'
+__version__ = '0.1.4'
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
@@ -207,6 +207,9 @@ class QRZ:
   @property
   def country(self):
     return self._data['country']
+
+  def state(self):
+    return self._data.get('state')
 
   @property
   def grid(self):
