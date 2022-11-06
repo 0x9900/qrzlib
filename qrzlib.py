@@ -208,8 +208,9 @@ class QRZ:
   def country(self):
     return self._data['country']
 
+  @property
   def state(self):
-    return self._data.get('state')
+    return self._data['state']
 
   @property
   def grid(self):
