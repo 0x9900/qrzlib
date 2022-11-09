@@ -16,7 +16,7 @@ from functools import wraps
 from getpass import getpass
 from xml.dom import minidom
 
-__version__ = '0.1.5'
+__version__ = '0.1.6'
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
@@ -25,7 +25,7 @@ logging.basicConfig(
 
 AGENT = 'Python QRZ API'
 URL = "https://xmldata.qrz.com/xml/current/"
-DBM_FILE = '/Users/fred/.local/qrz-cache.gdbm'
+DBM_FILE = os.path.join(os.path.expanduser('~'), '.local', 'qrz-cache.gdbm')
 
 class GDBMCache:
   """Cache decorator used by the QRZ class. It allows multiple runs of
