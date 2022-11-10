@@ -82,22 +82,35 @@ class GDBMCache:
   def __repr__(self):
     return f'db: {self._dbm_file} expire: {self._expire}'
 
+  def get_key(self, key):
+    try:
+      with gdbm.open(self._dbm_file, 'r') as fdb:
+        record = marshal.loads(fdb[key])
+        if self._expire == 0 or record[self._kexpire] > time.time() - self._expire:
+          del record[self._kexpire]
+          self.log.debug('%s found in cache', key)
+          return record
+        self.log.debug('Cache expired')
+        raise KeyError(key)
+    except gdbm.error as err:
+      logging.error(err)
+      raise SystemError(err) from None
+
+  def expire(self, key):
+    with gdbm.open(self._dbm_file, 'c') as fdb:
+      if key in fdb:
+        del fdb[key]
+        return True
+    return False
+
   def __call__(self, func, *args):
     """Simple cache decorator."""
     @wraps(func)
     def gdb_cache(*args):
       key = args[1]
       try:
-        with gdbm.open(self._dbm_file, 'r') as fdb:
-          record = marshal.loads(fdb[key])
-        if self._expire == 0 or record[self._kexpire] > time.time() - self._expire:
-          del record[self._kexpire]
-          self.log.debug('%s found in cache', key)
-          return record
-        self.log.debug('Cache expired')
-        raise KeyError
-      except gdbm.error as err:
-        logging.error(err)
+        record = self.get_key(key)
+        return record
       except KeyError:
         pass
 
@@ -118,7 +131,7 @@ class QRZ:
   class SessionError(Exception):
     pass
 
-  class NotFound(Exception):
+  class NotFound(KeyError):
     pass
 
   _xml_keys = [
@@ -163,7 +176,8 @@ class QRZ:
       callsign = dom.getElementsByTagName('Callsign')
       if not callsign:
         error = QRZ.getdata(session[0], 'Error')
-        raise QRZ.NotFound(error)
+        self.log.error('Not Found: %s', error)
+        return {'__qrzlib_error': 'NotFound'}
 
       for tagname in self._xml_keys:
         data[tagname] = QRZ.getdata(callsign[0], tagname)
@@ -173,6 +187,10 @@ class QRZ:
     if not self.key:
       raise QRZ.SessionError('First authenticate')
     qrz_data = self._get_call(callsign)
+    if '__qrzlib_error' in qrz_data:
+      self._data = {}
+      raise QRZ.NotFound(f"{callsign} {qrz_data['__qrzlib_error']}")
+
     for tagname, value in qrz_data.items():
       self._data[tagname] = value
 
