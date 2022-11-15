@@ -16,7 +16,7 @@ from functools import wraps
 from getpass import getpass
 from xml.dom import minidom
 
-__version__ = '0.1.7'
+__version__ = '0.1.8'
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
@@ -43,7 +43,7 @@ class GDBMCache:
   """
 
   _EXPIRE_MULT = {
-    '': 1,
+    '': 60,
     'H': 3600,
     'D': 3600 * 24,
     'W': 3600 * 24 * 7,
@@ -103,6 +103,15 @@ class GDBMCache:
         return True
     return False
 
+  def store_key(self, key, data):
+    data[self._kexpire] = time.time()
+    try:
+      with gdbm.open(self._dbm_file, 'c') as fdb:
+        fdb[key] = marshal.dumps(data)
+    except gdbm.error as err:
+      self.log.error(err)
+      raise IOError from err
+
   def __call__(self, func, *args):
     """Simple cache decorator."""
     @wraps(func)
@@ -112,15 +121,13 @@ class GDBMCache:
         record = self.get_key(key)
         return record
       except KeyError:
+        self.log.debug('Load %s from QRZ', key)
         pass
 
-      assert not bool(self.log.debug('Load %s from QRZ', key))
       try:
         record = func(*args)
-        record[self._kexpire] = time.time()
-        with gdbm.open(self._dbm_file, 'c') as fdb:
-          fdb[key] = marshal.dumps(record)
-      except gdbm.error as err:
+        self.store_key(key, record)
+      except IOError as err:
         self.log.error(err)
         raise IOError from err
       return record
@@ -176,7 +183,7 @@ class QRZ:
       callsign = dom.getElementsByTagName('Callsign')
       if not callsign:
         error = QRZ.getdata(session[0], 'Error')
-        self.log.error('Not Found: %s', error)
+        self.log.debug('Not Found: %s', error)
         return {'__qrzlib_error': 'NotFound'}
 
       for tagname in self._xml_keys:
