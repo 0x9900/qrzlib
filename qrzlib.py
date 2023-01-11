@@ -16,7 +16,7 @@ from functools import wraps
 from getpass import getpass
 from xml.dom import minidom
 
-__version__ = '0.1.9'
+__version__ = '0.2.0'
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
@@ -86,6 +86,14 @@ class GDBMCache:
     try:
       return len(gdbm.open(self._dbm_file, 'r'))
     except gdbm.error as err:
+      raise SystemError(err) from None
+
+  def __contains__(self, key):
+    try:
+      with gdbm.open(self._dbm_file, 'r') as fdb:
+        return key in fdb
+    except gdbm.error as err:
+      logging.error(err)
       raise SystemError(err) from None
 
   def get_key(self, key):
