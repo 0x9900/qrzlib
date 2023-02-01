@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-# Fred C (W6BSD) 2022
+#
+# BSD 3-Clause License
+#
+# Copyright (c) 2022-2023 Fred W6BSD
+# All rights reserved.
+#
 #
 
 import dbm.gnu as gdbm
