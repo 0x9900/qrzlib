@@ -7,7 +7,6 @@
 #
 #
 
-import dbm.gnu as gdbm
 import json
 import logging
 import marshal
@@ -21,7 +20,12 @@ from functools import wraps
 from getpass import getpass
 from xml.dom import minidom
 
-__version__ = '0.2.0'
+try:
+  import dbm.gnu as dbm
+except ImportError:
+  import dbm
+
+__version__ = '0.2.1'
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
@@ -30,18 +34,19 @@ logging.basicConfig(
 
 AGENT = 'Python QRZ API'
 URL = "https://xmldata.qrz.com/xml/current/"
-DBM_FILE = os.path.join(os.path.expanduser('~'), '.local', 'qrz-cache.gdbm')
+DBM_FILE = os.path.join(os.path.expanduser('~'), '.local', 'qrz-cache.db')
 
-class GDBMCache:
+
+class DBMCache:
   """Cache decorator used by the QRZ class. It allows multiple runs of
   a program without downloading the call informations from QRZ on
   every run.
 
-  @GDBMCache('cachefilename.gdbm')
+  @DBMCache('cachefilename')
   def get_call(callsign):
      . . .
 
-  Cache the call informations in a gdbm database. There is no
+  Cache the call informations in a dbm database. There is no
   mechanism to invalidate the cached information beside removing the
   cache file.
 
@@ -57,15 +62,16 @@ class GDBMCache:
     }
 
   def __init__(self, dbm_file, expire=0):
-    """GDBM cache constructor. A cache expiration of 0 mean the data
+    """DBM cache constructor. A cache expiration of 0 mean the data
     cached never expire.
     The expiration time can be expressed with an integer followed by
     the the character [YMWDH] for Year, Month, Week, Days or Hours.
 
     """
-    self.log = logging.getLogger('GDBMCache')
+    self.log = logging.getLogger('DBMCache')
     self.log.setLevel(os.getenv('LOG_LEVEL', 'INFO').upper())
     self._dbm_file = dbm_file
+    self._create_db()
     self._kexpire = f"_{self.__class__.__name__}_expire_"
     if isinstance(expire, int):
       self._expire = expire
@@ -79,31 +85,45 @@ class GDBMCache:
     _time = int(match.group(1))
     _mult = match.group(2).upper()
     try:
-      self._expire = _time * GDBMCache._EXPIRE_MULT[_mult]
+      self._expire = _time * DBMCache._EXPIRE_MULT[_mult]
     except KeyError as err:
       raise SystemError(f'Wrong expiration time: "{expire}" - {err}') from None
     self.log.debug(self)
+
+  def _create_db(self):
+    if os.path.exists(self._dbm_file):
+      return
+
+    path = os.path.dirname(self._dbm_file)
+    try:
+      if not os.path.exists(path):
+        os.mkdir(path)
+      with dbm.open(self._dbm_file, 'c'):
+        pass
+    except IOError as err:
+      self.log.error(err)
+      sys.exit(os.EX_IOERR)
 
   def __repr__(self):
     return f'db: {self._dbm_file} expire: {self._expire}'
 
   def __len__(self):
     try:
-      return len(gdbm.open(self._dbm_file, 'r'))
-    except gdbm.error as err:
+      return len(dbm.open(self._dbm_file, 'r'))
+    except dbm.error as err:
       raise SystemError(err) from None
 
   def __contains__(self, key):
     try:
-      with gdbm.open(self._dbm_file, 'r') as fdb:
+      with dbm.open(self._dbm_file, 'r') as fdb:
         return key in fdb
-    except gdbm.error as err:
+    except dbm.error as err:
       logging.error(err)
       raise SystemError(err) from None
 
   def get_key(self, key):
     try:
-      with gdbm.open(self._dbm_file, 'r') as fdb:
+      with dbm.open(self._dbm_file, 'r') as fdb:
         record = marshal.loads(fdb[key])
         if self._expire == 0 or record[self._kexpire] > time.time() - self._expire:
           del record[self._kexpire]
@@ -111,12 +131,12 @@ class GDBMCache:
           return record
         self.log.debug('Cache expired')
         raise KeyError(key)
-    except gdbm.error as err:
+    except dbm.error as err:
       logging.error(err)
       raise SystemError(err) from None
 
   def expire(self, key):
-    with gdbm.open(self._dbm_file, 'c') as fdb:
+    with dbm.open(self._dbm_file, 'c') as fdb:
       if key in fdb:
         del fdb[key]
         return True
@@ -125,9 +145,9 @@ class GDBMCache:
   def store_key(self, key, data):
     data[self._kexpire] = time.time()
     try:
-      with gdbm.open(self._dbm_file, 'c') as fdb:
+      with dbm.open(self._dbm_file, 'c') as fdb:
         fdb[key] = marshal.dumps(data)
-    except gdbm.error as err:
+    except dbm.error as err:
       self.log.error(err)
       raise IOError from err
 
@@ -189,7 +209,7 @@ class QRZ:
       self.log.error('Authentication error: %s', self.error)
       raise QRZ.SessionError(self.error)
 
-  @GDBMCache(DBM_FILE)
+  @DBMCache(DBM_FILE)
   def _get_call(self, callsign):
     callsign = callsign.upper()
     params = dict(s=self.key, callsign=callsign, agent=AGENT)
