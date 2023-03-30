@@ -25,7 +25,7 @@ try:
 except ImportError:
   import dbm
 
-__version__ = '0.2.1'
+__version__ = '0.2.2'
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
@@ -102,7 +102,7 @@ class DBMCache:
         pass
     except IOError as err:
       self.log.error(err)
-      sys.exit(os.EX_IOERR)
+      sys.exit(10)
 
   def __repr__(self):
     return f'db: {self._dbm_file} expire: {self._expire}'
