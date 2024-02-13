@@ -2,11 +2,12 @@
 #
 # BSD 3-Clause License
 #
-# Copyright (c) 2022-2023 Fred W6BSD
+# Copyright (c) 2022-2024 Fred W6BSD
 # All rights reserved.
 #
-#
+# pylint: disable=consider-using-with
 
+import dbm
 import json
 import logging
 import marshal
@@ -15,17 +16,11 @@ import re
 import time
 import urllib.parse
 import urllib.request
-
 from functools import wraps
 from getpass import getpass
 from xml.dom import minidom
 
-try:
-  import dbm.gnu as dbm
-except ImportError:
-  import dbm
-
-__version__ = '0.2.2'
+__version__ = '0.2.3'
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
@@ -34,7 +29,7 @@ logging.basicConfig(
 
 AGENT = 'Python QRZ API'
 URL = "https://xmldata.qrz.com/xml/current/"
-DBM_FILE = os.path.join(os.path.expanduser('~'), '.local', 'qrz-cache.db')
+DBM_FILE = os.path.join(os.path.expanduser('~'), '.local', 'qrz-cache')
 
 
 class DBMCache:
@@ -102,7 +97,7 @@ class DBMCache:
         pass
     except IOError as err:
       self.log.error(err)
-      sys.exit(10)
+      raise SystemExit(err) from None
 
   def __repr__(self):
     return f'db: {self._dbm_file} expire: {self._expire}'
@@ -161,7 +156,6 @@ class DBMCache:
         return record
       except KeyError:
         self.log.debug('Load %s from QRZ', key)
-        pass
 
       try:
         record = func(*args)
@@ -197,7 +191,7 @@ class QRZ:
     self._data = {}
 
   def authenticate(self, user, password):
-    params = dict(username=user, password=password, agent=AGENT)
+    params = {"username": user, "password": password, "agent": AGENT}
     params = urllib.parse.urlencode(params).encode('ascii')
 
     response = urllib.request.urlopen(URL, params)
@@ -212,7 +206,7 @@ class QRZ:
   @DBMCache(DBM_FILE)
   def _get_call(self, callsign):
     callsign = callsign.upper()
-    params = dict(s=self.key, callsign=callsign, agent=AGENT)
+    params = {"s": self.key, "callsign": callsign, "agent": AGENT}
     params = urllib.parse.urlencode(params).encode('ascii')
 
     response = urllib.request.urlopen(URL, params)
