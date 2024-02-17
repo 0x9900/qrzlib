@@ -18,18 +18,21 @@ import urllib.parse
 import urllib.request
 from functools import wraps
 from getpass import getpass
+from importlib.metadata import version
+from pathlib import Path
+from typing import Tuple, Union
 from xml.dom import minidom
 
-__version__ = '0.2.3'
+__version__ = version("qrzlib")
 
 logging.basicConfig(
   format='%(asctime)s %(name)s:%(lineno)d %(levelname)s - %(message)s',
   level=logging.INFO
 )
 
-AGENT = 'Python QRZ API'
+AGENT = b'Python QRZ API'
 URL = "https://xmldata.qrz.com/xml/current/"
-DBM_FILE = os.path.join(os.path.expanduser('~'), '.local', 'qrz-cache')
+DBM_FILE = Path('~', '.local', 'qrz-cache').expanduser()
 
 
 class DBMCache:
@@ -54,9 +57,9 @@ class DBMCache:
     'W': 3600 * 24 * 7,
     'M': 3600 * 24 * 30.5,
     'Y': 3600 * 24 * 7 * 52,
-    }
+  }
 
-  def __init__(self, dbm_file, expire=0):
+  def __init__(self, dbm_file: Path, expire: str = '1Y'):
     """DBM cache constructor. A cache expiration of 0 mean the data
     cached never expire.
     The expiration time can be expressed with an integer followed by
@@ -68,6 +71,8 @@ class DBMCache:
     self._dbm_file = dbm_file
     self._create_db()
     self._kexpire = f"_{self.__class__.__name__}_expire_"
+    self._expire: float = 0.0
+
     if isinstance(expire, int):
       self._expire = expire
       return
@@ -86,14 +91,13 @@ class DBMCache:
     self.log.debug(self)
 
   def _create_db(self):
-    if os.path.exists(self._dbm_file):
+    if self._dbm_file.exists():
       return
 
-    path = os.path.dirname(self._dbm_file)
     try:
-      if not os.path.exists(path):
-        os.mkdir(path)
-      with dbm.open(self._dbm_file, 'c'):
+      if not self._dbm_file.parent.exists():
+        self._dbm_file.parent.mkdir()
+      with dbm.open(str(self._dbm_file), 'c'):
         pass
     except IOError as err:
       self.log.error(err)
@@ -104,21 +108,21 @@ class DBMCache:
 
   def __len__(self):
     try:
-      return len(dbm.open(self._dbm_file, 'r'))
+      return len(dbm.open(str(self._dbm_file), 'r'))
     except dbm.error as err:
       raise SystemError(err) from None
 
-  def __contains__(self, key):
+  def __contains__(self, key: str):
     try:
-      with dbm.open(self._dbm_file, 'r') as fdb:
+      with dbm.open(str(self._dbm_file), 'r') as fdb:
         return key in fdb
     except dbm.error as err:
       logging.error(err)
       raise SystemError(err) from None
 
-  def get_key(self, key):
+  def get_key(self, key: str) -> Union[dict, None]:
     try:
-      with dbm.open(self._dbm_file, 'r') as fdb:
+      with dbm.open(str(self._dbm_file), 'r') as fdb:
         record = marshal.loads(fdb[key])
         if self._expire == 0 or record[self._kexpire] > time.time() - self._expire:
           del record[self._kexpire]
@@ -130,17 +134,17 @@ class DBMCache:
       logging.error(err)
       raise SystemError(err) from None
 
-  def expire(self, key):
-    with dbm.open(self._dbm_file, 'c') as fdb:
+  def expire(self, key: str) -> bool:
+    with dbm.open(str(self._dbm_file), 'c') as fdb:
       if key in fdb:
         del fdb[key]
         return True
     return False
 
-  def store_key(self, key, data):
+  def store_key(self, key, data) -> None:
     data[self._kexpire] = time.time()
     try:
-      with dbm.open(self._dbm_file, 'c') as fdb:
+      with dbm.open(str(self._dbm_file), 'c') as fdb:
         fdb[key] = marshal.dumps(data)
     except dbm.error as err:
       self.log.error(err)
@@ -167,6 +171,7 @@ class DBMCache:
 
     return gdb_cache
 
+
 class QRZ:
   class SessionError(Exception):
     pass
@@ -183,47 +188,50 @@ class QRZ:
     'ituzone', 'geoloc', 'born',
   ]
 
-  def __init__(self):
+  def __init__(self) -> None:
     self.log = logging.getLogger('QRZ')
     self.log.setLevel(os.getenv('LOG_LEVEL', 'INFO').upper())
-    self.key = None
-    self.error = None
-    self._data = {}
+    self.key: Union[bytes, None]
+    self.error: Union[bytes, None]
+    self._data: dict = {}
 
-  def authenticate(self, user, password):
-    params = {"username": user, "password": password, "agent": AGENT}
-    params = urllib.parse.urlencode(params).encode('ascii')
+  def authenticate(self, user: str, password: str) -> None:
+    url_args = {"username": user.encode('utf-8'), "password": password.encode('utf-8'),
+                "agent": AGENT}
+    params: bytes = urllib.parse.urlencode(url_args).encode('ascii')
 
     response = urllib.request.urlopen(URL, params)
     with minidom.parse(response) as dom:
-      self.key = QRZ.getdata(dom, 'Key')
-      self.error = QRZ.getdata(dom, 'Error')
+      key = QRZ._getdata(dom, 'Key')
+      self.key = key.encode('utf-8') if key else None
+      error = QRZ._getdata(dom, 'Error')
+      self.error = error.encode('utf-8') if error else None
 
     if not self.key:
       self.log.error('Authentication error: %s', self.error)
       raise QRZ.SessionError(self.error)
 
   @DBMCache(DBM_FILE)
-  def _get_call(self, callsign):
+  def _get_call(self, callsign: str) -> dict:
     callsign = callsign.upper()
-    params = {"s": self.key, "callsign": callsign, "agent": AGENT}
-    params = urllib.parse.urlencode(params).encode('ascii')
+    url_args = {"s": self.key, "callsign": callsign, "agent": AGENT}
+    params: bytes = urllib.parse.urlencode(url_args).encode('ascii')
 
     response = urllib.request.urlopen(URL, params)
     with minidom.parse(response) as dom:
       data = {}
       session = dom.getElementsByTagName('Session')
-      callsign = dom.getElementsByTagName('Callsign')
-      if not callsign:
-        error = QRZ.getdata(session[0], 'Error')
+      call = dom.getElementsByTagName('Callsign')
+      if not call:
+        error = QRZ._getdata(session[0], 'Error')
         self.log.debug('Not Found: %s', error)
         return {'__qrzlib_error': 'NotFound'}
 
       for tagname in self._xml_keys:
-        data[tagname] = QRZ.getdata(callsign[0], tagname)
+        data[tagname] = QRZ._getdata(call[0], tagname)
     return data
 
-  def get_call(self, callsign):
+  def get_call(self, callsign: str):
     if not self.key:
       raise QRZ.SessionError('First authenticate')
     qrz_data = self._get_call(callsign)
@@ -235,7 +243,7 @@ class QRZ:
       self._data[tagname] = value
 
   @staticmethod
-  def getdata(dom, nodename):
+  def _getdata(dom, nodename: str) -> Union[str, None]:
     try:
       data = []
       node = dom.getElementsByTagName(nodename)[0]
@@ -246,52 +254,52 @@ class QRZ:
     except IndexError:
       return None
 
-  def to_json(self):
+  def to_json(self) -> str:
     return json.dumps(self._data)
 
-  def to_dict(self):
+  def to_dict(self) -> dict:
     return self._data
 
   @property
-  def latlon(self):
+  def latlon(self) -> Union[Tuple[float, float], None]:
     if self._data['lat'] and self._data['lon']:
       return (float(self._data['lat']), float(self._data['lon']))
     return None
 
   @property
-  def zip(self):
+  def zip(self) -> str:
     return self._data['zip']
 
   @property
-  def country(self):
+  def country(self) -> str:
     return self._data['country']
 
   @property
-  def state(self):
+  def state(self) -> str:
     return self._data['state']
 
   @property
-  def grid(self):
+  def grid(self) -> str:
     return self._data['grid']
 
   @property
-  def fname(self):
+  def fname(self) -> str:
     return self._data['fname']
 
   @property
-  def name(self):
+  def name(self) -> str:
     return self._data['name']
 
   @property
-  def fullname(self):
+  def fullname(self) -> str:
     return self._data['name_fmt']
 
   @property
-  def email(self):
+  def email(self) -> str:
     return self._data['email']
 
 
-def main():
+def main() -> None:
   qrz = QRZ()
   qrz_call = os.getenv('QRZ_CALL', 'W6BSD')
   key = os.getenv('QRZ_KEY') or getpass(f'"{qrz_call}" XML Data key: ')
@@ -311,6 +319,7 @@ def main():
       print(call, qrz.fullname, qrz.zip, qrz.latlon, qrz.grid, qrz.email)
     except QRZ.NotFound as err:
       print(err)
+
 
 if __name__ == "__main__":
   try:
