@@ -7,6 +7,8 @@ upload.sh
 *.swo
 *.swp
 
+_version.py
+
 # C extensions
 *.so
 

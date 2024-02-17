@@ -20,7 +20,7 @@ from functools import wraps
 from getpass import getpass
 from importlib.metadata import version
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Union
 from xml.dom import minidom
 
 __version__ = version("qrzlib")
@@ -120,7 +120,7 @@ class DBMCache:
       logging.error(err)
       raise SystemError(err) from None
 
-  def get_key(self, key: str) -> dict | None:
+  def get_key(self, key: str) -> Union[dict, None]:
     try:
       with dbm.open(str(self._dbm_file), 'r') as fdb:
         record = marshal.loads(fdb[key])
@@ -191,8 +191,8 @@ class QRZ:
   def __init__(self) -> None:
     self.log = logging.getLogger('QRZ')
     self.log.setLevel(os.getenv('LOG_LEVEL', 'INFO').upper())
-    self.key: bytes | None
-    self.error: bytes | None
+    self.key: Union[bytes, None]
+    self.error: Union[bytes, None]
     self._data: dict = {}
 
   def authenticate(self, user: str, password: str) -> None:
@@ -243,7 +243,7 @@ class QRZ:
       self._data[tagname] = value
 
   @staticmethod
-  def _getdata(dom, nodename: str) -> str | None:
+  def _getdata(dom, nodename: str) -> Union[str, None]:
     try:
       data = []
       node = dom.getElementsByTagName(nodename)[0]
@@ -261,7 +261,7 @@ class QRZ:
     return self._data
 
   @property
-  def latlon(self) -> Tuple[float, float] | None:
+  def latlon(self) -> Union[Tuple[float, float], None]:
     if self._data['lat'] and self._data['lon']:
       return (float(self._data['lat']), float(self._data['lon']))
     return None
