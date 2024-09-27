@@ -23,6 +23,9 @@
         "Topic :: Communications :: Ham Radio",
     ]
 
+[project.scripts]
+  qrzlib = "qrzlib:main"
+
 [tool.setuptools_scm]
     write_to = "qrzlib/_version.py"
 
