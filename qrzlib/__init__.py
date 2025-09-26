@@ -177,6 +177,9 @@ class QRZRecord:
     encoder = IJSONEncoder(indent=indent).encode
     return encoder(asdict(self))
 
+  def __contains__(self, field):
+    return hasattr(self, field)
+
 
 @dataclass(frozen=True)
 class CacheRecord:
