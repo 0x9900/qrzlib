@@ -320,7 +320,7 @@ class QRZ:
           continue
         try:
           data[tagname] = cast(QRZ._getdata(call[0], tagname))
-        except TypeError:
+        except (ValueError, TypeError):
           data[tagname] = None
 
     return QRZRecord(**data)
