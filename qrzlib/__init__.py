@@ -10,17 +10,17 @@
 import dbm
 import json
 import logging
-import marshal
 import os
+import pickle
 import re
-import time
 import urllib.parse
 import urllib.request
-from functools import wraps
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta
 from getpass import getpass
 from importlib.metadata import version
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Any, Callable
 from xml.dom import minidom
 
 __version__ = version("qrzlib")
@@ -30,27 +30,176 @@ logging.basicConfig(
   level=logging.INFO
 )
 
-AGENT = b'Python QRZ API'
+AGENT = b'Python QRZ API - https://github.com/0x9900/qrzlib'
 URL = "https://xmldata.qrz.com/xml/current/"
-DBM_FILE = Path('~', '.local', 'qrz-cache').expanduser()
+DBM_PATH = Path('~', '.local').expanduser()
+DBM_CACHE = DBM_PATH / 'qrz-cache_v2'
+DBM_ERROR = DBM_PATH / 'qrz-error_v2'
+
+
+def mkdate(strdate: str) -> date:
+  # 2025-06-17 returns a datetime.date object
+  return datetime.strptime(strdate, '%Y-%m-%d').date()
+
+
+def mkdatetime(strdate: str) -> datetime:
+  return datetime.strptime(strdate, '%Y-%m-%d %H:%M:%S')
+
+
+def mkint(value: str) -> int | None:
+  try:
+    return int(value)
+  except (TypeError, ValueError):
+    return None
+
+
+def mkfloat(value: str) -> float | None:
+  try:
+    return float(value)
+  except (TypeError, ValueError):
+    return None
+
+
+class IJSONEncoder(json.JSONEncoder):
+  """Special JSON encoder capable of encoding sets"""
+  def default(self, o: Any) -> Any:
+    if isinstance(o, (date, datetime)):
+      return {"__type__": o.__class__.__name__, "value": o.isoformat()}
+    return super().default(o)
+
+
+XML_KEYS: list[tuple[str, Callable]] = [
+  ('call', str),
+  ('aliases', str),
+  ('dxcc', mkint),
+  ('fname', str),
+  ('name', str),
+  ('name_fmt', str),
+  ('addr1', str),
+  ('addr2', str),
+  ('state', str),
+  ('zip', str),
+  ('country', str),
+  ('ccode', mkint),
+  ('lat', mkfloat),
+  ('lon', mkfloat),
+  ('grid', str),
+  ('county', str),
+  ('fips', str),
+  ('land', str),
+  ('efdate', mkdate),
+  ('expdate', mkdate),
+  ('p_call', str),
+  ('class', str),
+  ('codes', str),
+  ('qslmgr', str),
+  ('email', str),
+  ('url', str),
+  ('u_views', mkint),
+  ('bio', mkint),
+  ('image', str),
+  ('serial', mkint),
+  ('moddate', mkdatetime),
+  ('MSA', str),
+  ('AreaCode', str),
+  ('TimeZone', str),
+  ('GMTOffset', mkint),
+  ('DST', str),
+  ('eqsl', mkint),
+  ('mqsl', mkint),
+  ('cqzone', mkint),
+  ('ituzone', mkint),
+  ('geoloc', str),
+  ('born', str)
+]
+
+
+@dataclass
+class QRZRecord:
+  # pylint: disable=invalid-name, too-many-instance-attributes
+  CLASS: str | None
+  call: str
+  aliases: str | None
+  dxcc: int
+  fname: str
+  name: str
+  name_fmt: str
+  addr1: str | None
+  addr2: str | None
+  state: str | None
+  zip: str
+  country: str
+  ccode: int
+  lat: float
+  lon: float
+  grid: str
+  county: str
+  fips: int
+  land: str
+  efdate: date
+  expdate: date
+  p_call: str | None
+  codes: str | None
+  qslmgr: str | None
+  email: str | None
+  url: str | None
+  u_views: int
+  bio: int
+  image: str | None
+  serial: int
+  moddate: datetime
+  MSA: str | None
+  AreaCode: str | None
+  TimeZone: str | None
+  GMTOffset: int | None
+  DST: str | None
+  eqsl: int | None
+  mqsl: int | None
+  cqzone: int
+  ituzone: int
+  geoloc: str | None
+  born: str | None
+
+  @property
+  def latlon(self) -> tuple[float, float] | None:
+    if self.lat and self.lon:
+      return (self.lat, self.lon)
+    return None
+
+  @property
+  def fullname(self) -> str:
+    return self.name_fmt
+
+  def to_dict(self) -> dict:
+    return asdict(self)
+
+  def to_json(self, indent: int = 2) -> str:
+    encoder = IJSONEncoder(indent=indent).encode
+    return encoder(asdict(self))
+
+
+@dataclass(frozen=True)
+class CacheRecord:
+  age: datetime
+  data: bytes
+
+
+@dataclass(frozen=True)
+class CacheError:
+  age: datetime
+  error: str
+
+
+def format_seconds(total_seconds: float) -> str:
+  days = int(total_seconds // 86400)
+  hours = int((total_seconds % 86400) // 3600)
+  minutes = int((total_seconds % 3600) // 60)
+  seconds = int(total_seconds % 60)
+  return f"{days}d {hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 class DBMCache:
-  """Cache decorator used by the QRZ class. It allows multiple runs of
-  a program without downloading the call informations from QRZ on
-  every run.
-
-  @DBMCache('cachefilename')
-  def get_call(callsign):
-     . . .
-
-  Cache the call informations in a dbm database. There is no
-  mechanism to invalidate the cached information beside removing the
-  cache file.
-
-  """
-
-  _EXPIRE_MULT = {
+  _EXPIRE_MULTIPLIER = {
     '': 60,
     'H': 3600,
     'D': 3600 * 24,
@@ -58,118 +207,68 @@ class DBMCache:
     'M': 3600 * 24 * 30.5,
     'Y': 3600 * 24 * 7 * 52,
   }
+  _PARSE_EXPIRE = re.compile(r'^(\d+)(|[YMWDH])$', re.IGNORECASE).match
 
-  def __init__(self, dbm_file: Path, expire: str = '1Y'):
-    """DBM cache constructor. A cache expiration of 0 mean the data
-    cached never expire.
-    The expiration time can be expressed with an integer followed by
-    the the character [YMWDH] for Year, Month, Week, Days or Hours.
+  def __init__(self, cache_name: str | Path, cache_expire: str = '3Y') -> None:
+    assert isinstance(cache_expire, str | Path), 'Cache expiration must be a string'
+    assert isinstance(cache_expire, str), 'Cache expiration must be a string'
+    self._cache_name = str(cache_name) if isinstance(cache_name, Path) else cache_name
 
-    """
-    self.log = logging.getLogger('DBMCache')
-    self.log.setLevel(os.getenv('LOG_LEVEL', 'INFO').upper())
-    self._dbm_file = dbm_file
-    self._create_db()
-    self._kexpire = f"_{self.__class__.__name__}_expire_"
-    self._expire: float = 0.0
-
-    if isinstance(expire, int):
-      self._expire = expire
-      return
-    if not isinstance(expire, str):
-      raise SystemError('Expiration time error')
-
-    match = re.match(r'^(\d+)(|[YMWDH])$', expire, re.IGNORECASE)
-    if not match:
-      raise SystemError('Expiration time error')
+    if not (match := DBMCache._PARSE_EXPIRE(cache_expire)):
+      raise SystemError(f'Wrong cache expiration time {cache_expire}')
     _time = int(match.group(1))
     _mult = match.group(2).upper()
     try:
-      self._expire = _time * DBMCache._EXPIRE_MULT[_mult]
+      self._cache_expire = _time * DBMCache._EXPIRE_MULTIPLIER[_mult]
     except KeyError as err:
-      raise SystemError(f'Wrong expiration time: "{expire}" - {err}') from None
-    self.log.debug(self)
+      raise SystemError(f'Wrong cache expiration time {cache_expire} = {err}') from None
 
-  def _create_db(self):
-    if self._dbm_file.exists():
-      return
-
+    # Make sure the cache file exists
     try:
-      if not self._dbm_file.parent.exists():
-        self._dbm_file.parent.mkdir()
-      with dbm.open(str(self._dbm_file), 'c'):
-        pass
-    except IOError as err:
-      self.log.error(err)
-      raise SystemExit(err) from None
-
-  def __repr__(self):
-    return f'db: {self._dbm_file} expire: {self._expire}'
-
-  def __len__(self):
-    try:
-      return len(dbm.open(str(self._dbm_file), 'r'))
+      dbm.open(self._cache_name, 'c')
     except dbm.error as err:
-      raise SystemError(err) from None
+      raise IOError(err) from None
 
-  def __contains__(self, key: str):
+  def __repr__(self) -> str:
+    return f'<DBMCache: {self._cache_name} {format_seconds(self._cache_expire)}'
+
+  def put(self, key: str, data: Any) -> Any:
+    assert isinstance(key, str)
+    age = datetime.now()
+    _data = CacheRecord(age, data)
     try:
-      with dbm.open(str(self._dbm_file), 'r') as fdb:
-        return key in fdb
+      with dbm.open(self._cache_name, 'c') as fdb:
+        fdb[key] = pickle.dumps(_data)
     except dbm.error as err:
-      logging.error(err)
-      raise SystemError(err) from None
+      raise IOError(err) from None
+    except pickle.PicklingError as err:
+      raise IOError(err) from None
 
-  def get_key(self, key: str) -> Union[dict, None]:
-    try:
-      with dbm.open(str(self._dbm_file), 'r') as fdb:
-        record = marshal.loads(fdb[key])
-        if self._expire == 0 or record[self._kexpire] > time.time() - self._expire:
-          del record[self._kexpire]
-          self.log.debug('%s found in cache', key)
-          return record
-        self.log.debug('Cache expired')
-        raise KeyError(key)
-    except dbm.error as err:
-      logging.error(err)
-      raise SystemError(err) from None
+  def get(self, key: str) -> None | Any:
+    assert isinstance(key, str)
+    with dbm.open(self._cache_name, 'r') as fdb:
+      _data = fdb.get(key)
 
-  def expire(self, key: str) -> bool:
-    with dbm.open(str(self._dbm_file), 'c') as fdb:
-      if key in fdb:
-        del fdb[key]
-        return True
-    return False
+    if not _data:
+      raise KeyError(key)
 
-  def store_key(self, key, data) -> None:
-    data[self._kexpire] = time.time()
-    try:
-      with dbm.open(str(self._dbm_file), 'c') as fdb:
-        fdb[key] = marshal.dumps(data)
-    except dbm.error as err:
-      self.log.error(err)
-      raise IOError from err
+    data = pickle.loads(_data)
+    if data.age + timedelta(seconds=self._cache_expire) < datetime.now():
+      raise KeyError(key)
+    return data.data
 
-  def __call__(self, func, *args):
-    """Simple cache decorator."""
-    @wraps(func)
-    def gdb_cache(*args):
-      key = args[1]
-      try:
-        record = self.get_key(key)
-        return record
-      except KeyError:
-        self.log.debug('Load %s from QRZ', key)
+  def remove(self, key: str) -> None:
+    with dbm.open(self._cache_name, 'w') as fdb:
+      del fdb[key]
 
-      try:
-        record = func(*args)
-        self.store_key(key, record)
-      except IOError as err:
-        self.log.error(err)
-        raise IOError from err
-      return record
+  def __len__(self) -> int:
+    with dbm.open(self._cache_name, 'r') as fdb:
+      return len(fdb)
 
-    return gdb_cache
+  def expiration_date(self, key: str) -> datetime:
+    with dbm.open(self._cache_name, 'r') as fdb:
+      data = pickle.loads(fdb[key])
+    return data.age + timedelta(seconds=self._cache_expire)
 
 
 class QRZ:
@@ -179,21 +278,12 @@ class QRZ:
   class NotFound(KeyError):
     pass
 
-  _xml_keys = [
-    'call', 'aliases', 'dxcc', 'fname', 'name', 'name_fmt', 'addr1', 'addr2',
-    'state', 'zip', 'country', 'ccode', 'lat', 'lon', 'grid', 'county', 'fips',
-    'land', 'efdate', 'expdate', 'p_call', 'class', 'codes', 'qslmgr',
-    'email', 'url', 'u_views', 'bio', 'image', 'serial', 'moddate', 'MSA',
-    'AreaCode', 'TimeZone', 'GMTOffset', 'DST', 'eqsl', 'mqsl', 'cqzone',
-    'ituzone', 'geoloc', 'born',
-  ]
-
-  def __init__(self) -> None:
-    self.log = logging.getLogger('QRZ')
-    self.log.setLevel(os.getenv('LOG_LEVEL', 'INFO').upper())
-    self.key: Union[bytes, None]
-    self.error: Union[bytes, None]
+  def __init__(self, cache_age: str = '5Y') -> None:
+    self.key: bytes | None
+    self.error: bytes | None
     self._data: dict = {}
+    self._cache: DBMCache = DBMCache(DBM_CACHE, cache_age)
+    self._error: DBMCache = DBMCache(DBM_ERROR, '3M')
 
   def authenticate(self, user: str, password: str) -> None:
     url_args = {"username": user.encode('utf-8'), "password": password.encode('utf-8'),
@@ -208,11 +298,9 @@ class QRZ:
       self.error = error.encode('utf-8') if error else None
 
     if not self.key:
-      self.log.error('Authentication error: %s', self.error)
       raise QRZ.SessionError(self.error)
 
-  @DBMCache(DBM_FILE)
-  def _get_call(self, callsign: str) -> dict:
+  def _get_call(self, callsign: str) -> QRZRecord:
     callsign = callsign.upper()
     url_args = {"s": self.key, "callsign": callsign, "agent": AGENT}
     params: bytes = urllib.parse.urlencode(url_args).encode('ascii')
@@ -224,26 +312,42 @@ class QRZ:
       call = dom.getElementsByTagName('Callsign')
       if not call:
         error = QRZ._getdata(session[0], 'Error')
-        self.log.debug('Not Found: %s', error)
-        return {'__qrzlib_error': 'NotFound'}
+        raise KeyError(f'{error}')
 
-      for tagname in self._xml_keys:
-        data[tagname] = QRZ._getdata(call[0], tagname)
-    return data
+      for tagname, cast in XML_KEYS:
+        if tagname == 'class':
+          data[tagname.upper()] = cast(QRZ._getdata(call[0], tagname))
+          continue
+        try:
+          data[tagname] = cast(QRZ._getdata(call[0], tagname))
+        except (ValueError, TypeError):
+          data[tagname] = None
+
+    return QRZRecord(**data)
 
   def get_call(self, callsign: str):
-    if not self.key:
-      raise QRZ.SessionError('First authenticate')
-    qrz_data = self._get_call(callsign)
-    if '__qrzlib_error' in qrz_data:
-      self._data = {}
-      raise QRZ.NotFound(f"{callsign} {qrz_data['__qrzlib_error']}")
+    try:
+      data = self._cache.get(callsign)
+      return data
+    except KeyError:
+      pass
 
-    for tagname, value in qrz_data.items():
-      self._data[tagname] = value
+    try:
+      data = self._error.get(callsign)
+      return None
+    except KeyError:
+      pass
+
+    try:
+      data = self._get_call(callsign)
+      self._cache.put(callsign, data)
+    except KeyError as err:
+      self._error.put(callsign, str(err))
+      return None
+    return data
 
   @staticmethod
-  def _getdata(dom, nodename: str) -> Union[str, None]:
+  def _getdata(dom, nodename: str) -> str | None:
     try:
       data = []
       node = dom.getElementsByTagName(nodename)[0]
@@ -259,44 +363,6 @@ class QRZ:
 
   def to_dict(self) -> dict:
     return self._data
-
-  @property
-  def latlon(self) -> Union[Tuple[float, float], None]:
-    if self._data['lat'] and self._data['lon']:
-      return (float(self._data['lat']), float(self._data['lon']))
-    return None
-
-  @property
-  def zip(self) -> str:
-    return self._data['zip']
-
-  @property
-  def country(self) -> str:
-    return self._data['country']
-
-  @property
-  def state(self) -> str:
-    return self._data['state']
-
-  @property
-  def grid(self) -> str:
-    return self._data['grid']
-
-  @property
-  def fname(self) -> str:
-    return self._data['fname']
-
-  @property
-  def name(self) -> str:
-    return self._data['name']
-
-  @property
-  def fullname(self) -> str:
-    return self._data['name_fmt']
-
-  @property
-  def email(self) -> str:
-    return self._data['email']
 
 
 def main() -> None:
@@ -315,8 +381,8 @@ def main() -> None:
     if call in ('QUIT', 'EXIT', 'BYE'):
       break
     try:
-      qrz.get_call(call)
-      print(call, qrz.fullname, qrz.zip, qrz.latlon, qrz.grid, qrz.email)
+      callinfo = qrz.get_call(call)
+      print(call, callinfo.fullname, callinfo.zip, callinfo.latlon, callinfo.grid, callinfo.email)
     except QRZ.NotFound as err:
       print(err)
 

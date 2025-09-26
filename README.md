@@ -13,8 +13,8 @@ import qrzlib
 qrz = qrzlib.QRZ()
 qrz.authenticate('qrz-id', 'xmldata-key')
 try:
-	qrz.get_call('W6BSD')
-	print(qrz.fullname, qrz.zip, qrz.latlon, qrz.grid, qrz.email)
+	call_info = qrz.get_call('W6BSD')
+	print(call_info.fullname, call_info.latlon, call_info.grid, call_info.email)
 except QRZ.NotFound as err:
 	print(err)
 ```
@@ -26,14 +26,19 @@ the object QRZ can also return all the fields as a dictionary of as a
 json object.
 
 ```python
-In [6]: qrz.to_dict()
-Out[6]:
-{'call': 'W6BSD',
+>>> call_info.to_dict()
+{'CLASS': 'E',
+ 'call': 'W6BSD',
  'aliases': 'KM6IGK',
- 'dxcc': '291',
+ 'dxcc': 291,
  'fname': 'Fred',
+ 'ccode': 271,
+ 'lat': 37.460659,
+ 'lon': -95.543333,
+ 'grid': 'EM27fl',
  . . .
- 'ituzone': '6',
- 'geoloc': 'user',
- 'born': None}
+ 'expdate': datetime.date(2027, 3, 3),
+ 'cqzone': 3,
+ 'ituzone': 6,
+ }
 ```
