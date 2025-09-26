@@ -30,7 +30,7 @@ logging.basicConfig(
   level=logging.INFO
 )
 
-AGENT = b'Python QRZ API'
+AGENT = b'Python QRZ API - https://github.com/0x9900/qrzlib'
 URL = "https://xmldata.qrz.com/xml/current/"
 DBM_PATH = Path('~', '.local').expanduser()
 DBM_CACHE = DBM_PATH / 'qrz-cache_v2'
