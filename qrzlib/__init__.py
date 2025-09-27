@@ -350,6 +350,7 @@ class QRZ:
       return None
     except ExpatError as err:
       logging.warning('%s - %s', callsign, err)
+      self._error.put(callsign, str(err))
       return None
     return data
 
