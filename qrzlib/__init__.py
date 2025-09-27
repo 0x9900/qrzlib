@@ -22,6 +22,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Callable
 from xml.dom import minidom
+from xml.parsers.expat import ExpatError
 
 __version__ = version("qrzlib")
 
@@ -346,6 +347,9 @@ class QRZ:
       self._cache.put(callsign, data)
     except KeyError as err:
       self._error.put(callsign, str(err))
+      return None
+    except ExpatError as err:
+      logging.warning('%s - %s', callsign, err)
       return None
     return data
 
