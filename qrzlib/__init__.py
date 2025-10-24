@@ -2,7 +2,7 @@
 #
 # BSD 3-Clause License
 #
-# Copyright (c) 2022-2024 Fred W6BSD
+# Copyright (c) 2022-2025 Fred W6BSD
 # All rights reserved.
 #
 # pylint: disable=consider-using-with
