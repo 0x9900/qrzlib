@@ -8,6 +8,7 @@
 # pylint: disable=consider-using-with
 
 import dbm
+import io
 import json
 import logging
 import os
@@ -282,12 +283,12 @@ class QRZ:
   class NotFound(KeyError):
     pass
 
-  def __init__(self, cache_age: str = '5Y') -> None:
+  def __init__(self, cache_age: str = '5Y', negative_cache_age: str = '6M') -> None:
     self.key: bytes | None
     self.error: bytes | None
     self._data: dict = {}
     self._cache: DBMCache = DBMCache(DBM_CACHE, cache_age)
-    self._error: DBMCache = DBMCache(DBM_ERROR, '3M')
+    self._error: DBMCache = DBMCache(DBM_ERROR, negative_cache_age)
 
   def authenticate(self, user: str, password: str) -> None:
     url_args = {"username": user.encode('utf-8'), "password": password.encode('utf-8'),
@@ -307,10 +308,21 @@ class QRZ:
   def _get_call(self, callsign: str) -> QRZRecord:
     callsign = callsign.upper()
     url_args = {"s": self.key, "callsign": callsign, "agent": AGENT}
-    params: bytes = urllib.parse.urlencode(url_args).encode('ascii')
 
+    params = urllib.parse.urlencode(url_args).encode('utf-8')
     response = urllib.request.urlopen(URL, params)
-    with minidom.parse(response) as dom:
+    content = response.read()
+    encoding = response.headers.get_content_charset('utf-8')
+    try:
+      text = content.decode(encoding)
+    except UnicodeDecodeError:
+      text = content.decode('windows-1252', errors='replace')
+
+    # --- Clean malformed XML --- Remove invalid control characters
+    text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", text)
+    # Fix unescaped ampersands (only those not part of an entity)
+    text = re.sub(r"&(?![a-zA-Z0-9#]+;)", "&amp;", text)
+    with minidom.parse(io.BytesIO(text.encode('utf-8'))) as dom:
       data = {}
       session = dom.getElementsByTagName('Session')
       call = dom.getElementsByTagName('Callsign')
