@@ -286,6 +286,7 @@ class QRZ:
   def __init__(self, cache_age: str = '5Y', negative_cache_age: str = '6M') -> None:
     self.key: bytes | None
     self.error: bytes | None
+    self.count: int | None
     self._data: dict = {}
     self._cache: DBMCache = DBMCache(DBM_CACHE, cache_age)
     self._error: DBMCache = DBMCache(DBM_ERROR, negative_cache_age)
@@ -301,6 +302,8 @@ class QRZ:
       self.key = key.encode('utf-8') if key else None
       error = QRZ._getdata(dom, 'Error')
       self.error = error.encode('utf-8') if error else None
+      count = QRZ._getdata(dom, 'Count')
+      self.count = int(count) if key else None
 
     if not self.key:
       raise QRZ.SessionError(self.error)
