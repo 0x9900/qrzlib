@@ -235,7 +235,7 @@ class DBMCache:
       raise IOError(err) from None
 
   def __repr__(self) -> str:
-    return f'<DBMCache: {self._cache_name} {format_seconds(self._cache_expire)}'
+    return f'<DBMCache: {self._cache_name} {format_seconds(self._cache_expire)}>'
 
   def put(self, key: str, data: Any) -> Any:
     assert isinstance(key, str)
@@ -291,6 +291,9 @@ class QRZ:
     self._cache: DBMCache = DBMCache(DBM_CACHE, cache_age)
     self._error: DBMCache = DBMCache(DBM_ERROR, negative_cache_age)
 
+  def __repr__(self) -> str:
+    return f'<QRZ: {id(self)}> Cache: {self._cache} Counter: {self.count}'
+
   def authenticate(self, user: str, password: str) -> None:
     url_args = {"username": user.encode('utf-8'), "password": password.encode('utf-8'),
                 "agent": AGENT}
@@ -303,7 +306,7 @@ class QRZ:
       error = QRZ._getdata(dom, 'Error')
       self.error = error.encode('utf-8') if error else None
       count = QRZ._getdata(dom, 'Count')
-      self.count = int(count) if key else None
+      self.count = int(count) if count else None
 
     if not self.key:
       raise QRZ.SessionError(self.error)
