@@ -312,6 +312,9 @@ class QRZ:
       raise QRZ.SessionError(self.error)
 
   def _get_call(self, callsign: str) -> QRZRecord:
+    if not isinstance(callsign, str):
+      raise ValueError(f'Callsign "{callsign}" should be a string')
+
     callsign = callsign.upper()
     url_args = {"s": self.key, "callsign": callsign, "agent": AGENT}
 
