@@ -7,15 +7,17 @@
 #
 # pylint: disable=consider-using-with
 
-import dbm
 import io
 import json
 import logging
 import os
 import pickle
 import re
+import sqlite3
+import threading
 import urllib.parse
 import urllib.request
+from collections.abc import MutableMapping
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from getpass import getpass
@@ -34,9 +36,26 @@ logging.basicConfig(
 
 AGENT = b'Python QRZ API - https://github.com/0x9900/qrzlib'
 URL = "https://xmldata.qrz.com/xml/current/"
-DBM_PATH = Path('~', '.local').expanduser()
-DBM_CACHE = DBM_PATH / 'qrz-cache_v2'
-DBM_ERROR = DBM_PATH / 'qrz-error_v2'
+DB_PATH = Path('~', '.local').expanduser()
+DB_CACHE = DB_PATH / 'qrz-cache.sqlite3'
+
+DAY = 3600 * 24
+WEEK = 3600 * 24 * 7
+MONTH = 3600 * 24 * 30.5
+YEAR = 3600 * 24 * 7 * 52
+
+CACHE_TABLE = """
+PRAGMA synchronous = EXTRA;
+PRAGMA journal_mode = WAL;
+CREATE TABLE IF NOT EXISTS qrz_cache (
+  key TEXT NOT NULL,
+  expire TIMESTAMP,
+  data BLOB
+);
+CREATE UNIQUE INDEX if not exists qrz_cache_idx on qrz_cache (key);
+"""
+
+DETECT_TYPES = sqlite3.PARSE_DECLTYPES
 
 
 def mkdate(strdate: str) -> date:
@@ -183,18 +202,6 @@ class QRZRecord:
     return hasattr(self, field)
 
 
-@dataclass(frozen=True)
-class CacheRecord:
-  age: datetime
-  data: bytes
-
-
-@dataclass(frozen=True)
-class CacheError:
-  age: datetime
-  error: str
-
-
 def format_seconds(total_seconds: float) -> str:
   days = int(total_seconds // 86400)
   hours = int((total_seconds % 86400) // 3600)
@@ -203,77 +210,100 @@ def format_seconds(total_seconds: float) -> str:
   return f"{days}d {hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-class DBMCache:
-  _EXPIRE_MULTIPLIER = {
-    '': 60,
-    'H': 3600,
-    'D': 3600 * 24,
-    'W': 3600 * 24 * 7,
-    'M': 3600 * 24 * 30.5,
-    'Y': 3600 * 24 * 7 * 52,
-  }
-  _PARSE_EXPIRE = re.compile(r'^(\d+)(|[YMWDH])$', re.IGNORECASE).match
+class DBCacheError(Exception):
+  pass
 
-  def __init__(self, cache_name: str | Path, cache_expire: str = '3Y') -> None:
-    assert isinstance(cache_expire, str | Path), 'Cache expiration must be a string'
-    assert isinstance(cache_expire, str), 'Cache expiration must be a string'
-    self._cache_name = str(cache_name) if isinstance(cache_name, Path) else cache_name
 
-    if not (match := DBMCache._PARSE_EXPIRE(cache_expire)):
-      raise SystemError(f'Wrong cache expiration time {cache_expire}')
-    _time = int(match.group(1))
-    _mult = match.group(2).upper()
-    try:
-      self._cache_expire = _time * DBMCache._EXPIRE_MULTIPLIER[_mult]
-    except KeyError as err:
-      raise SystemError(f'Wrong cache expiration time {cache_expire} = {err}') from None
+class DBCache(MutableMapping):
+  def __init__(self, cache_name: str | Path, cache_expire: int = YEAR * 3) -> None:
+    self._lock = threading.Lock()
+    self.cache_expire = cache_expire
+    self.cache_name = cache_name
+    self._init_db()
 
-    # Make sure the cache file exists
-    try:
-      dbm.open(self._cache_name, 'c')
-    except dbm.error as err:
-      raise IOError(err) from None
+  def connect_db(self, timeout: int = 5) -> sqlite3.Connection:
+    conn = sqlite3.connect(self.cache_name, timeout=timeout, check_same_thread=False,
+                           detect_types=DETECT_TYPES, isolation_level=None)
+    logging.debug("Database: %s", self.cache_name)
+    return conn
+
+  def _init_db(self) -> None:
+    with self.connect_db() as conn:
+      curs = conn.cursor()
+      curs.executescript(CACHE_TABLE)
 
   def __repr__(self) -> str:
-    return f'<DBMCache: {self._cache_name} {format_seconds(self._cache_expire)}>'
+    return f'<DBCache: {self.cache_name} {format_seconds(self.cache_expire)}>'
 
-  def put(self, key: str, data: Any) -> Any:
+  def __setitem__(self, key: str, data: QRZRecord) -> Any:
+    self.put(key, data, None)
+
+  def put(self, key: str, data: QRZRecord, expire: int | None) -> None:
     assert isinstance(key, str)
-    age = datetime.now()
-    _data = CacheRecord(age, data)
+    _expire = expire if expire is not None else self.cache_expire
+    expire = datetime.now() + timedelta(seconds=_expire)
+
     try:
-      with dbm.open(self._cache_name, 'c') as fdb:
-        fdb[key] = pickle.dumps(_data)
-    except dbm.error as err:
-      raise IOError(err) from None
+      with self._lock, self.connect_db() as conn:
+        conn.execute("INSERT OR REPLACE INTO qrz_cache (key, expire, data) VALUES (?, ?, ?)",
+                     (key, expire, pickle.dumps(data)))
     except pickle.PicklingError as err:
       raise IOError(err) from None
 
-  def get(self, key: str) -> None | Any:
-    assert isinstance(key, str)
-    with dbm.open(self._cache_name, 'r') as fdb:
-      _data = fdb.get(key)
+  def seterr(self, key: str, expire: int = 7 * DAY):
+    expire = datetime.now() + timedelta(seconds=expire)
+    with self._lock, self.connect_db() as conn:
+      conn.execute("INSERT OR REPLACE INTO qrz_cache (key, expire, data) VALUES (?, ?, ?)",
+                   (key, expire, None))
 
-    if not _data:
-      raise KeyError(key)
+  def __getitem__(self, key: str) -> None | Any:
+    now = datetime.now()
 
-    data = pickle.loads(_data)
-    if data.age + timedelta(seconds=self._cache_expire) < datetime.now():
-      raise KeyError(key)
-    return data.data
+    with self.connect_db() as conn:
+      cur = conn.execute("SELECT expire, data FROM qrz_cache WHERE key = ?", (key,))
+      if (row := cur.fetchone()) is None:
+        raise KeyError(f'{key} not found')
 
-  def remove(self, key: str) -> None:
-    with dbm.open(self._cache_name, 'w') as fdb:
-      del fdb[key]
+    if row[1] is None:
+      raise KeyError(f'{key} not found')
+
+    if row[0] < now or row[1] is None:
+      raise KeyError(f'{key} expired')
+
+    return pickle.loads(row[1])
+
+  def __delitem__(self, key: str) -> None:
+    with self._lock, self.connect_db() as conn:
+      conn.execute("DELETE FROM qrz_cache WHERE key = ?", (key, ))
 
   def __len__(self) -> int:
-    with dbm.open(self._cache_name, 'r') as fdb:
-      return len(fdb)
+    """Count all the records in the cache database"""
 
-  def expiration_date(self, key: str) -> datetime:
-    with dbm.open(self._cache_name, 'r') as fdb:
-      data = pickle.loads(fdb[key])
-    return data.age + timedelta(seconds=self._cache_expire)
+    with self.connect_db() as conn:
+      cur = conn.execute("SELECT COUNT(*) FROM qrz_cache")
+      row = cur.fetchone()
+    return row[0]
+
+  def __iter__(self) -> QRZRecord:
+    """Iterate through valid items stored in the cache"""
+    now = datetime.now()
+    with self.connect_db() as conn:
+      cur = conn.execute(
+        "SELECT expire, data FROM qrz_cache WHERE expire > ? AND data IS NOT NULL", (now,)
+      )
+      for item in cur.fetchall():
+        yield pickle.loads(item[1])
+
+  def purge(self) -> None:
+    """Purge all the records that are either expired or NULL (error)"""
+    now = datetime.now()
+    with self._lock, self.connect_db() as conn:
+      conn.execute("DELETE from qrz_cache WHERE expire < ? OR data IS NULL", (now, ))
+
+  def dump(self) -> Any:
+    with self.connect_db() as conn:
+      cur = conn.execute("SELECT key, expire, data FROM qrz_cache")
+      yield cur.fetchall()
 
 
 class QRZ:
@@ -283,13 +313,17 @@ class QRZ:
   class NotFound(KeyError):
     pass
 
-  def __init__(self, cache_age: str = '5Y', negative_cache_age: str = '6M') -> None:
-    self.key: bytes | None
-    self.error: bytes | None
-    self.count: int | None
+  class XMLError(Exception):
+    pass
+
+  def __init__(self, cache_age: int = YEAR * 3, negative_cache_age: int = 2 * MONTH) -> None:
+    self.key: bytes | None = None
+    self.error: bytes | None = None
+    self.count: int | None = None
     self._data: dict = {}
-    self._cache: DBMCache = DBMCache(DBM_CACHE, cache_age)
-    self._error: DBMCache = DBMCache(DBM_ERROR, negative_cache_age)
+    self.cache_age = cache_age
+    self.negative_cache_age = negative_cache_age
+    self._cache: DBCache = DBCache(DB_CACHE)
 
   def __repr__(self) -> str:
     return f'<QRZ: {id(self)}> Cache: {self._cache} Counter: {self.count}'
@@ -351,28 +385,20 @@ class QRZ:
     return QRZRecord(**data)
 
   def get_call(self, callsign: str):
-    try:
-      data = self._cache.get(callsign)
+    if (data := self._cache.get(callsign)):
       return data
-    except KeyError:
-      pass
-
-    try:
-      data = self._error.get(callsign)
-      return None
-    except KeyError:
-      pass
 
     try:
       data = self._get_call(callsign)
-      self._cache.put(callsign, data)
+      self._cache.put(callsign, data, self.cache_age)
     except KeyError as err:
-      self._error.put(callsign, str(err))
-      return None
+      self._cache.seterr(callsign, self.negative_cache_age)
+      raise QRZ.NotFound(err)
     except ExpatError as err:
       logging.warning('%s - %s', callsign, err)
-      self._error.put(callsign, str(err))
-      return None
+      self._cache.seterr(callsign, self.negative_cache_age)
+      raise QRZ.XMLError(err)
+
     return data
 
   @staticmethod
@@ -398,7 +424,8 @@ def main() -> None:
   qrz = QRZ()
   qrz_call = os.getenv('QRZ_CALL', 'W6BSD')
   key = os.getenv('QRZ_KEY') or getpass(f'"{qrz_call}" XML Data key: ')
-  qrz.authenticate('W6BSD', key)
+  qrz.authenticate(qrz_call, key)
+
   while True:
     try:
       call = input('Callsign: ')
@@ -409,6 +436,7 @@ def main() -> None:
       break
     if call in ('QUIT', 'EXIT', 'BYE'):
       break
+
     try:
       callinfo = qrz.get_call(call)
       print(call, callinfo.fullname, callinfo.zip, callinfo.latlon, callinfo.grid, callinfo.email)

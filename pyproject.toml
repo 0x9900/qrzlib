@@ -23,6 +23,18 @@
         "Topic :: Communications :: Ham Radio",
     ]
 
+dependencies = [
+]
+
+[project.optional-dependencies]
+dev = [
+    "build",
+    "flake8",
+    "isort",
+    "pre-commit",
+    "pylint",
+]
+
 [project.scripts]
   qrzlib = "qrzlib:main"
 
