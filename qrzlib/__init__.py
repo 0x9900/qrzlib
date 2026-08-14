@@ -313,7 +313,7 @@ class DBCache(MutableMapping):
     return pickle.loads(data)
 
   def get(self, key: str, default: Any = None) -> None | Any:
-    return self.__getitem__(key)
+    return self[key]
 
   def __delitem__(self, key: str) -> None:
     with self._cursor() as cur:
