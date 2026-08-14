@@ -224,11 +224,14 @@ class RecordStatus(enum.IntEnum):
   ERROR = 2
 
 
-class DBCacheError(Exception):
-  pass
-
-
 class DBCache(MutableMapping):
+
+  class Error(Exception):
+    pass
+
+  class NotFoundCache(Exception):
+    pass
+
   def __init__(self, cache_name: str | Path, cache_expire: int = YEAR * 3) -> None:
     self._lock = threading.Lock()
     self.cache_name = cache_name
@@ -289,10 +292,8 @@ class DBCache(MutableMapping):
           "INSERT OR REPLACE INTO qrz_cache (key, expire, status, data) VALUES (?, ?, ?, ?)",
           (key, _expire, status, pickle.dumps(data))
         )
-    except pickle.PicklingError as err:
-      raise IOError(err) from err
-    except sqlite3.OperationalError as err:
-      raise DBCacheError(err) from err
+    except (pickle.PicklingError, sqlite3.OperationalError) as err:
+      raise DBCache.Error(err) from err
 
   def __getitem__(self, key: str) -> None | Any:
     now = datetime.now()
@@ -304,12 +305,15 @@ class DBCache(MutableMapping):
     status, expire, data = row
 
     if status == RecordStatus.ERROR:
-      raise KeyError(f'{key} not found')
+      raise DBCache.NotFoundCache(f'{key} not found')
 
     if expire < now:
       raise KeyError(f'{key} expired')
 
     return pickle.loads(data)
+
+  def get(self, key: str, default: Any = None) -> None | Any:
+    return self.__getitem__(key)
 
   def __delitem__(self, key: str) -> None:
     with self._cursor() as cur:
@@ -320,7 +324,6 @@ class DBCache(MutableMapping):
   def __len__(self) -> int:
     """Count all the valid records in the cache database"""
     now = datetime.now()
-
     with self._cursor() as cur:
       cur.execute(
         "SELECT COUNT(*) FROM qrz_cache WHERE expire > ? and status == ?",
@@ -379,13 +382,19 @@ class QRZ:
   class XMLError(Exception):
     pass
 
-  def __init__(self, cache_age: int = YEAR * 3, negative_cache_age: int = 2 * MONTH) -> None:
+  def __init__(
+    self,
+    db_cache: Path | str = DB_CACHE,
+    cache_age: int = YEAR * 3,
+    negative_cache_age: int = 2 * MONTH
+  ) -> None:
+
     self.key: bytes | None = None
     self.error: bytes | None = None
     self.count: int | None = None
     self.cache_age = cache_age
     self.negative_cache_age = negative_cache_age
-    self._cache: DBCache = DBCache(DB_CACHE)
+    self._cache: DBCache = DBCache(db_cache)
 
   def __repr__(self) -> str:
     return f'<QRZ: {id(self)}> Cache: {self._cache} Counter: {self.count}'
@@ -420,10 +429,10 @@ class QRZ:
     if not isinstance(callsign, str):
       raise ValueError(f'Callsign "{callsign}" should be a string')
 
+    callsign = callsign.upper()
     if not self.key:
       raise QRZ.SessionError('Not authenticated: call authenticate() first')
 
-    callsign = callsign.upper()
     url_args = {"s": self.key, "callsign": callsign, "agent": AGENT}
     params = urllib.parse.urlencode(url_args).encode('utf-8')
 
@@ -444,8 +453,18 @@ class QRZ:
     return QRZRecord(**data)  # type: ignore[arg-type]
 
   def get_call(self, callsign: str):
-    if (data := self._cache.get(callsign)):
+    if not isinstance(callsign, str):
+      raise ValueError(f'Callsign "{callsign}" should be a string')
+
+    callsign = callsign.upper()
+    try:
+      data = self._cache.get(callsign)
       return data
+    except DBCache.NotFoundCache as err:
+      raise QRZ.NotFound(err)
+    except KeyError:
+      # Either the valid is not cached or the cached value is expired.
+      pass
 
     try:
       data = self._get_call(callsign)
