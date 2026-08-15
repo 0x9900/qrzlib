@@ -6,7 +6,7 @@
     name = "qrzlib"
     readme = "README.md"
     description = "API to access data from qrz.com."
-    license = {file = "LICENSE"}
+    license = "BSD-3-Clause"
     dynamic = ["version"]
     requires-python = ">=3.10"
     authors = [
@@ -16,12 +16,23 @@
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
         "Intended Audience :: Telecommunications Industry",
-        "License :: OSI Approved :: BSD License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python",
         "Topic :: Communications :: Ham Radio",
     ]
+
+dependencies = [
+]
+
+[project.optional-dependencies]
+dev = [
+    "build",
+    "flake8",
+    "isort",
+    "pre-commit",
+    "pylint",
+]
 
 [project.scripts]
   qrzlib = "qrzlib:main"
