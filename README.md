@@ -8,14 +8,14 @@ license and a qrz.com account.
 ## Usage
 
 ```python
+import os
 import qrzlib
-
 qrz = qrzlib.QRZ()
-qrz.authenticate('qrz-id', 'xmldata-key')
+qrz.authenticate(os.getenv('QRZ_USER'), os.getenv('QRZ_PASSWORD'))
 try:
 	call_info = qrz.get_call('W6BSD')
 	print(call_info.fullname, call_info.latlon, call_info.grid, call_info.email)
-except QRZ.NotFound as err:
+except qrzlib.QRZ.NotFound as err:
 	print(err)
 ```
 
@@ -26,19 +26,23 @@ the object QRZ can also return all the fields as a dictionary of as a
 json object.
 
 ```python
->>> call_info.to_dict()
-{'CLASS': 'E',
- 'call': 'W6BSD',
- 'aliases': 'KM6IGK',
- 'dxcc': 291,
- 'fname': 'Fred',
- 'ccode': 271,
- 'lat': 37.460659,
- 'lon': -95.543333,
- 'grid': 'EM27fl',
- . . .
- 'expdate': datetime.date(2027, 3, 3),
- 'cqzone': 3,
- 'ituzone': 6,
- }
+>>> callinfo.to_dict()
+{
+    'TimeZone': 'Central',
+    'aliases': 'KM6IGK',
+    'call': 'W6BSD',
+    'ccode': 271,
+    'class': 'E',
+    'country': 'United States',
+    'county': 'Harris',
+    'cqzone': 3,
+    'dxcc': 291,
+    'fname': 'Fred',
+    'grid': 'EM27fl',
+    'image': 'https://cdn-xml.qrz.com/d/w6bsd/FredSailing_jpeg.jpg',
+    'ituzone': 6,
+    'land': 'United States',
+    . . .
+}
+>>>
 ```
